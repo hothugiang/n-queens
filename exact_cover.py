@@ -1,43 +1,53 @@
-# Copyright 2020 D-Wave Systems Inc.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 from dimod import BinaryQuadraticModel
 
-def exact_cover_bqm(problem_set, subsets):  
-    """Returns a BQM for an exact cover.
- 
-    An exact cover is a collection of subsets of `problem_set` that contains every 
-    element in `problem_set` exactly once.
-    
-    Args:
-        problem_set : iterable
-            An iterable of unique numbers.
-
-        subsets : list(iterable(numeric))
-            A list of subsets of `problem_set` used to find an exact cover.
-    """
+def exact_cover_bqm(problem_set, subsets):
     bqm = BinaryQuadraticModel({}, {}, 0, 'BINARY')
+
+    element_subsets = {}  # Lưu trữ subset mà mỗi phần tử thuộc về
+
+    for i, subset in enumerate(subsets):
+        for element in subset:
+            if element not in element_subsets:
+                element_subsets[element] = set()
+            element_subsets[element].add(i)
 
     for element in problem_set:
         bqm.offset += 1
 
-        for i in range(len(subsets)):    
-            if element in subsets[i]:
+        if element in element_subsets:
+            subsets_containing_element = element_subsets[element]
+
+            for i in subsets_containing_element:
                 bqm.add_variable(i, -1)
 
-                for j in range(i):         
-                    if element in subsets[j]:
+                for j in range(i):
+                    if j in subsets_containing_element:
+                        bqm.add_interaction(i, j, 2)
+
+    return bqm
+
+def exact_cover_bqm2(problem_set, subsets):
+    bqm = BinaryQuadraticModel({}, {}, 0, 'BINARY')
+
+    element_subsets = {} 
+
+    for i, subset in enumerate(subsets):
+        for element in subset:
+            if element not in element_subsets:
+                element_subsets[element] = set()
+            element_subsets[element].add(i)
+
+    for element in problem_set:
+        bqm.offset += 1
+
+        if element in element_subsets:
+            subsets_containing_element = element_subsets[element]
+
+            for i in subsets_containing_element:
+                bqm.add_variable(i, -1)
+
+                for j in range(i):
+                    if j in subsets_containing_element:
                         bqm.add_interaction(i, j, 2)
 
     return bqm

@@ -1,18 +1,11 @@
-# Copyright 2020 D-Wave Systems Inc.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 from collections import Counter
+
+import itertools
+import json
+import sys
+from sys import stderr
+import minorminer
+import dimod
 
 import numpy as np
 import matplotlib
@@ -20,22 +13,15 @@ matplotlib.use("agg")    # must select backend before importing pyplot
 import matplotlib.pyplot as plt
 from dimod import BinaryQuadraticModel
 from dwave.system import LeapHybridSampler
+from neal import SimulatedAnnealingSampler
+from dwave.system.samplers import DWaveSampler
+from dwave.system.composites import FixedEmbeddingComposite, EmbeddingComposite
+from pulp import *
 
 from exact_cover import exact_cover_bqm
 
 def build_subsets(n):
-    """Returns a list of subsets of constraints corresponding to every
-    position on the chessboard.
-
-    Each constraint is represented by a unique number (ID). Each subset
-    should contain:
-    1) Exactly one column constraint ID (0 to n-1).
-    2) Exactly one row constraint ID (n to 2*n-1).
-    3) At most one diagonal (top-left to bottom-right) constraint ID (2*n to
-       4*n-4).
-    4) At most one anti-diagonal (bottom-left to top-right) constraint ID (4*n-3
-       to 6*n-7).
-    """
+    """Optimized and corrected version to generate subsets of constraints for N-Queens problem."""
     subsets = []
     for x in range(n):
         for y in range(n):
@@ -44,37 +30,59 @@ def build_subsets(n):
 
             subset = {col, row}
 
-            diag = x + y + (2*n - 1)
-            min_diag = 2*n
-            max_diag = 4*n - 4
+            # Diagonal
+            diag = x + y
+            subset.add(diag + 2*n)
 
-            if diag >= min_diag and diag <= max_diag:
-                subset.add(diag)
-
-            anti_diag = (n - 1 - x + y) + (4*n - 4)
-            min_anti_diag = 4*n - 3
-            max_anti_diag = 6*n - 7
-
-            if anti_diag >= min_anti_diag and anti_diag <= max_anti_diag:
-                subset.add(anti_diag)
+            # Anti-diagonal
+            anti_diag = (n - 1 - x + y)
+            subset.add(anti_diag + 4*n - 1) 
 
             subsets.append(subset)
 
     return subsets
+
+def add_constraint(bqm, S, x1, x2):
+    lamda = 3
+
+    bqm.add_variable(S, lamda * (1/2))
+    bqm.add_variable(x1, lamda * (1/2))
+    bqm.add_variable(x2, lamda * (1/2))
+    
+    bqm.add_interaction(S, x1, lamda * (-1))
+    bqm.add_interaction(S, x2, lamda * (-1))
+    bqm.add_interaction(x1, x2, lamda * 2)
+
+def handle_diag_constraints_S(bqm, subsets, diag_constraints):
+    """Update bqm with diagonal (and anti-diagonal) constraints.
+    Duplicates are penalized.
+    """
+    for constraint in diag_constraints:
+        S = bqm.num_variables
+        subset_indices = [i for i, subset in enumerate(subsets) if constraint in subset]
+
+        if len(subset_indices) >= 2:
+            add_constraint(bqm, S, subset_indices[0], subset_indices[1])
+            S += 1
+            for i in range(2, len(subset_indices)):
+                add_constraint(bqm, S, S-1, subset_indices[i])
+
+    return bqm
 
 def handle_diag_constraints(bqm, subsets, diag_constraints):
     """Update bqm with diagonal (and anti-diagonal) constraints.
     Duplicates are penalized.
     """
     for constraint in diag_constraints:
-        for i in range(len(subsets)):
-            if constraint in subsets[i]:
-                for j in range(i):
-                    if constraint in subsets[j]:
-                        bqm.add_interaction(i, j, 2)
+        subset_indices = [i for i, subset in enumerate(subsets) if constraint in subset]
+
+        for i in range(len(subset_indices)):
+            for j in range(i):
+                if subset_indices[i] != subset_indices[j]:
+                    bqm.add_interaction(subset_indices[i], subset_indices[j], 2)
     return bqm
 
-def n_queens(n, sampler=None):
+def n_queens(n, sampler=None, num_reads=2000):
     """Returns a potential solution to the n-queens problem in a list of sets,
     each containing constraint IDs representing a queen's location.
 
@@ -95,16 +103,24 @@ def n_queens(n, sampler=None):
     # Build BQM with only row/col constraints
     bqm = exact_cover_bqm(row_col_constraint_ids, subsets)
 
+    out_path = "embedding_output.json" 
+
     # Add diag/anti-diag constraints - duplicates are penalized.
-    bqm = handle_diag_constraints(bqm, subsets, diag_constraint_ids)
+    bqm = handle_diag_constraints_S(bqm, subsets, diag_constraint_ids)
 
     if sampler is None:
-        sampler = LeapHybridSampler()
+        # sampler = LeapHybridSampler()
+        # sampler = SimulatedAnnealingSampler()
+        sampler = EmbeddingComposite(DWaveSampler(token='DEV-e0ac368d04813d5d0a2019a61e39c30c446c6397'))
+        
+    sampleset = sampler.sample(bqm, num_reads=num_reads)
 
-    sampleset = sampler.sample(bqm, label='Example - N Queens')
     sample = sampleset.first.sample
+    # for run in sample:
+    #     print(run.energy)
+    print(sample)
 
-    return [subsets[i] for i in sample if sample[i]]
+    return [subsets[i] for i in range(len(subsets)) if sample[i]]
 
 def is_valid_solution(n, solution):
     """Check that solution is valid by making sure all constraints were met.
